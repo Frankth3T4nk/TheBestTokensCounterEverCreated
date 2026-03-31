@@ -1,4 +1,4 @@
-# Claude Tokens Notifier by Frank Leurs
+# Tokies by Fr4nkth3t4nk
 
 A native macOS menu bar app that monitors Claude Code token usage and sends notifications.
 
@@ -41,7 +41,7 @@ open ClaudeTokensNotifier.xcodeproj
 1. Select the `ClaudeTokensNotifier` target
 2. Go to **Signing & Capabilities**
 3. Set your **Team** (Apple ID works for local builds)
-4. Bundle ID: `com.frankleurs.ClaudeTokensNotifier`
+4. Bundle ID: `com.[firstnamelastname].ClaudeTokensNotifier`
 
 ### 4. Build & Run
 
@@ -137,4 +137,4 @@ ClaudeTokensNotifier/
 
 ## License
 
-Copyright © 2024 Frank Leurs. All rights reserved.
+Copyright © 2025 Fr4nkth3t4nk. All rights reserved.
