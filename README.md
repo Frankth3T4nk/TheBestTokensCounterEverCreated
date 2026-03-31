@@ -1,4 +1,4 @@
-# Tokies by Fr4nkth3t4nk
+# Tokies by Frankth3t4nk
 
 A native macOS menu bar app that monitors Claude Code token usage and sends notifications.
 
@@ -137,4 +137,4 @@ ClaudeTokensNotifier/
 
 ## License
 
-Copyright © 2025 Fr4nkth3t4nk. All rights reserved.
+Copyright © 2026 Frankth3t4nk. All rights reserved.
