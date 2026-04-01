@@ -29,9 +29,12 @@ class TokenService {
     }
 
     func fetchTokenStatus() async throws -> TokenStatus {
-        // Option A: Anthropic API rate-limit headers (requires API key in Settings)
-        if let status = try? await fetchFromAnthropicAPI() {
-            return status
+        let apiKey = SettingsManager.shared.anthropicApiKey
+
+        // Option A: Anthropic API rate-limit headers (requires API key in Settings).
+        // If a key is set but fails, surface the error immediately rather than falling through.
+        if !apiKey.isEmpty {
+            return try await fetchFromAnthropicAPI()
         }
 
         // Option B: Custom HTTP endpoint
@@ -64,14 +67,24 @@ class TokenService {
             throw TokenServiceError.noDataAvailable
         }
 
-        guard let url = URL(string: "https://api.anthropic.com/v1/models") else {
+        // Use count_tokens — it doesn't generate a response or consume output tokens,
+        // but it DOES return the anthropic-ratelimit-tokens-* response headers.
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages/count_tokens") else {
             throw TokenServiceError.networkError("Invalid Anthropic API URL")
         }
 
         var request = URLRequest(url: url)
-        request.httpMethod = "GET"
+        request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.setValue("token-counting-2024-11-01", forHTTPHeaderField: "anthropic-beta")
+
+        let body: [String: Any] = [
+            "model": "claude-haiku-4-5-20251001",
+            "messages": [["role": "user", "content": "."]]
+        ]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         let (_, response) = try await session.data(for: request)
 
@@ -84,20 +97,14 @@ class TokenService {
             throw TokenServiceError.networkError("Invalid API key — check Settings")
         }
 
-        // Extract token rate-limit headers (present on all Anthropic API responses)
-        let headers = httpResponse.allHeaderFields as? [String: String] ?? [:]
-
-        // Try both header casing variants (URLSession lowercases them on some OS versions)
-        func header(_ name: String) -> String? {
-            headers[name] ?? headers[name.lowercased()]
-        }
-
-        let remaining = header("anthropic-ratelimit-tokens-remaining").flatMap { Int($0) }
-        let limit     = header("anthropic-ratelimit-tokens-limit").flatMap { Int($0) }
-        let resetTime = header("anthropic-ratelimit-tokens-reset")
+        // HTTPURLResponse.value(forHTTPHeaderField:) is case-insensitive per RFC 7230.
+        // This is correct; the previous [String:String] cast silently produced an empty dict.
+        let remaining = httpResponse.value(forHTTPHeaderField: "anthropic-ratelimit-tokens-remaining").flatMap { Int($0) }
+        let limit     = httpResponse.value(forHTTPHeaderField: "anthropic-ratelimit-tokens-limit").flatMap { Int($0) }
+        let resetTime = httpResponse.value(forHTTPHeaderField: "anthropic-ratelimit-tokens-reset")
 
         guard let remaining, let limit else {
-            throw TokenServiceError.noDataAvailable
+            throw TokenServiceError.networkError("API key valid but token headers missing — check API plan")
         }
 
         var status = TokenStatus()
