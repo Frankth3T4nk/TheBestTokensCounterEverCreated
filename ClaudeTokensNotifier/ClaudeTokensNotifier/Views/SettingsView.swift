@@ -111,6 +111,25 @@ struct SettingsView: View {
     private var connectionTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                sectionHeader("Anthropic API Key", icon: "key")
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        SecureField("sk-ant-...", text: $settings.anthropicApiKey)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Clear") {
+                            settings.anthropicApiKey = ""
+                        }
+                        .disabled(settings.anthropicApiKey.isEmpty)
+                    }
+                    Text("Enter your Anthropic API key to read live token rate-limit data. Get one at console.anthropic.com.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Divider()
+
                 sectionHeader("Polling Interval", icon: "timer")
 
                 VStack(alignment: .leading, spacing: 8) {

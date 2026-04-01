@@ -32,6 +32,10 @@ class SettingsManager: ObservableObject {
         didSet { UserDefaults.standard.set(customFilePath, forKey: Keys.customFilePath) }
     }
 
+    @Published var anthropicApiKey: String {
+        didSet { UserDefaults.standard.set(anthropicApiKey, forKey: Keys.anthropicApiKey) }
+    }
+
     private enum Keys {
         static let thresholds = "notificationThresholds"
         static let pollingInterval = "pollingInterval"
@@ -39,6 +43,7 @@ class SettingsManager: ObservableObject {
         static let launchAtLogin = "launchAtLogin"
         static let customEndpoint = "customEndpoint"
         static let customFilePath = "customFilePath"
+        static let anthropicApiKey = "anthropicApiKey"
     }
 
     private init() {
@@ -62,6 +67,7 @@ class SettingsManager: ObservableObject {
         launchAtLogin = defaults.bool(forKey: Keys.launchAtLogin)
         customEndpoint = defaults.string(forKey: Keys.customEndpoint) ?? ""
         customFilePath = defaults.string(forKey: Keys.customFilePath) ?? ""
+        anthropicApiKey = defaults.string(forKey: Keys.anthropicApiKey) ?? ""
     }
 
     private func updateLaunchAtLogin(enabled: Bool) {
@@ -96,5 +102,6 @@ class SettingsManager: ObservableObject {
         completionNotificationsEnabled = true
         customEndpoint = ""
         customFilePath = ""
+        anthropicApiKey = ""
     }
 }
