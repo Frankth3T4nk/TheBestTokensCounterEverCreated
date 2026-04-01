@@ -22,8 +22,8 @@ class TokenService {
 
     init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 5
-        config.timeoutIntervalForResource = 10
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 15
         session = URLSession(configuration: config)
         decoder = JSONDecoder()
     }
@@ -31,8 +31,9 @@ class TokenService {
     func fetchTokenStatus() async throws -> TokenStatus {
         let apiKey = SettingsManager.shared.anthropicApiKey
 
-        // Option A: Anthropic API rate-limit headers (requires API key in Settings).
-        // If a key is set but fails, surface the error immediately rather than falling through.
+        // Option A: Anthropic API — POST /v1/messages (max_tokens:1) returns
+        // anthropic-ratelimit-tokens-* headers showing live rate-limit window.
+        // NOTE: count_tokens does NOT return these headers; only /v1/messages does.
         if !apiKey.isEmpty {
             return try await fetchFromAnthropicAPI()
         }
@@ -42,17 +43,18 @@ class TokenService {
             return status
         }
 
-        // Option C: Local file
+        // Option C: Local JSON file
         if let status = try? await fetchFromFile() {
             return status
         }
 
-        // Option D: Claude Code session JSONL files (~/.claude/projects/)
+        // Option D: Claude Code session JSONL files
+        // Checks both ~/.claude/projects/ and ~/.config/claude/projects/
         if let status = try? await fetchFromClaudeSessionFiles() {
             return status
         }
 
-        // Option E: CLI (claude status --json)
+        // Option E: CLI fallback
         if let status = try? await fetchFromCLI() {
             return status
         }
@@ -60,16 +62,12 @@ class TokenService {
         throw TokenServiceError.noDataAvailable
     }
 
-    // MARK: - Option A: Anthropic API rate-limit headers
+    // MARK: - Option A: Anthropic API (live rate-limit headers)
+
     private func fetchFromAnthropicAPI() async throws -> TokenStatus {
         let apiKey = SettingsManager.shared.anthropicApiKey
-        guard !apiKey.isEmpty else {
-            throw TokenServiceError.noDataAvailable
-        }
 
-        // Use count_tokens — it doesn't generate a response or consume output tokens,
-        // but it DOES return the anthropic-ratelimit-tokens-* response headers.
-        guard let url = URL(string: "https://api.anthropic.com/v1/messages/count_tokens") else {
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
             throw TokenServiceError.networkError("Invalid Anthropic API URL")
         }
 
@@ -78,33 +76,39 @@ class TokenService {
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.setValue("token-counting-2024-11-01", forHTTPHeaderField: "anthropic-beta")
 
+        // Minimal request — cheapest possible call (Haiku, 1 output token).
+        // /v1/messages is the only endpoint that returns anthropic-ratelimit-tokens-* headers.
         let body: [String: Any] = [
             "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 1,
             "messages": [["role": "user", "content": "."]]
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         let (_, response) = try await session.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse else {
+        guard let http = response as? HTTPURLResponse else {
             throw TokenServiceError.networkError("No HTTP response from Anthropic API")
         }
 
-        // 401 means bad key — surface that clearly
-        if httpResponse.statusCode == 401 {
-            throw TokenServiceError.networkError("Invalid API key — check Settings")
+        if http.statusCode == 401 {
+            throw TokenServiceError.networkError("Invalid API key — update it in Settings → Connection")
+        }
+        if http.statusCode == 529 {
+            throw TokenServiceError.networkError("Anthropic API overloaded — will retry next poll")
+        }
+        guard (200..<300).contains(http.statusCode) || http.statusCode == 429 else {
+            throw TokenServiceError.networkError("Anthropic API returned HTTP \(http.statusCode)")
         }
 
-        // HTTPURLResponse.value(forHTTPHeaderField:) is case-insensitive per RFC 7230.
-        // This is correct; the previous [String:String] cast silently produced an empty dict.
-        let remaining = httpResponse.value(forHTTPHeaderField: "anthropic-ratelimit-tokens-remaining").flatMap { Int($0) }
-        let limit     = httpResponse.value(forHTTPHeaderField: "anthropic-ratelimit-tokens-limit").flatMap { Int($0) }
-        let resetTime = httpResponse.value(forHTTPHeaderField: "anthropic-ratelimit-tokens-reset")
+        // HTTPURLResponse.value(forHTTPHeaderField:) is case-insensitive (RFC 7230).
+        let remaining = http.value(forHTTPHeaderField: "anthropic-ratelimit-tokens-remaining").flatMap { Int($0) }
+        let limit     = http.value(forHTTPHeaderField: "anthropic-ratelimit-tokens-limit").flatMap { Int($0) }
+        let resetTime = http.value(forHTTPHeaderField: "anthropic-ratelimit-tokens-reset")
 
         guard let remaining, let limit else {
-            throw TokenServiceError.networkError("API key valid but token headers missing — check API plan")
+            throw TokenServiceError.networkError("API key valid but token rate-limit headers missing")
         }
 
         var status = TokenStatus()
@@ -115,22 +119,20 @@ class TokenService {
     }
 
     // MARK: - Option B: HTTP endpoint
+
     private func fetchFromHTTP() async throws -> TokenStatus {
         let customEndpoint = SettingsManager.shared.customEndpoint
-        let ports = customEndpoint.isEmpty ? [27681, 3000, 8080, 9000] : []
 
         if !customEndpoint.isEmpty {
             return try await fetchFromURL(customEndpoint)
         }
 
         var lastError: Error = TokenServiceError.noDataAvailable
-        for port in ports {
+        for port in [27681, 3000, 8080, 9000] {
             do {
-                let status = try await fetchFromURL("http://localhost:\(port)/token-status")
-                return status
+                return try await fetchFromURL("http://localhost:\(port)/token-status")
             } catch {
                 lastError = error
-                continue
             }
         }
         throw lastError
@@ -140,23 +142,20 @@ class TokenService {
         guard let url = URL(string: urlString) else {
             throw TokenServiceError.networkError("Invalid URL: \(urlString)")
         }
-
         let (data, response) = try await session.data(from: url)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200..<300).contains(httpResponse.statusCode) else {
+        guard let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
             throw TokenServiceError.networkError("Bad HTTP response")
         }
-
         do {
             return try decoder.decode(TokenStatus.self, from: data)
         } catch {
-            // Try flexible parsing
             return try parseFlexibleJSON(data: data)
         }
     }
 
-    // MARK: - Option C: Local file
+    // MARK: - Option C: Local JSON file
+
     private func fetchFromFile() async throws -> TokenStatus {
         let customPath = SettingsManager.shared.customFilePath
 
@@ -175,79 +174,71 @@ class TokenService {
         for fileURL in paths {
             if FileManager.default.fileExists(atPath: fileURL.path) {
                 let data = try Data(contentsOf: fileURL)
-                do {
-                    return try decoder.decode(TokenStatus.self, from: data)
-                } catch {
-                    return try parseFlexibleJSON(data: data)
-                }
+                do { return try decoder.decode(TokenStatus.self, from: data) }
+                catch { return try parseFlexibleJSON(data: data) }
             }
         }
-
         throw TokenServiceError.fileNotFound
     }
 
-    // MARK: - Option C: Claude Code session JSONL files
+    // MARK: - Option D: Claude Code session JSONL files
+
     private func fetchFromClaudeSessionFiles() async throws -> TokenStatus {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let projectsDir = home.appendingPathComponent(".claude/projects")
 
-        guard FileManager.default.fileExists(atPath: projectsDir.path) else {
-            throw TokenServiceError.fileNotFound
-        }
-
-        // Collect all JSONL files across project subdirectories
-        let projectDirs = (try? FileManager.default.contentsOfDirectory(
-            at: projectsDir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: .skipsHiddenFiles
-        )) ?? []
+        // Claude Code stores sessions in one of two root directories depending on version:
+        // ~/.claude/projects/          — classic location
+        // ~/.config/claude/projects/  — default since Claude Code 1.0.30
+        let rootCandidates = [
+            home.appendingPathComponent(".claude/projects"),
+            home.appendingPathComponent(".config/claude/projects")
+        ]
 
         var allJSONLFiles: [(URL, Date)] = []
-        for dir in projectDirs {
-            let files = (try? FileManager.default.contentsOfDirectory(
-                at: dir,
+
+        for root in rootCandidates {
+            guard FileManager.default.fileExists(atPath: root.path) else { continue }
+
+            let projectDirs = (try? FileManager.default.contentsOfDirectory(
+                at: root,
                 includingPropertiesForKeys: [.contentModificationDateKey],
                 options: .skipsHiddenFiles
-            ).filter { $0.pathExtension == "jsonl" }) ?? []
+            )) ?? []
 
-            for file in files {
-                let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey])
-                let modDate = attrs?.contentModificationDate ?? Date.distantPast
-                allJSONLFiles.append((file, modDate))
+            for dir in projectDirs {
+                let files = (try? FileManager.default.contentsOfDirectory(
+                    at: dir,
+                    includingPropertiesForKeys: [.contentModificationDateKey],
+                    options: .skipsHiddenFiles
+                ).filter { $0.pathExtension == "jsonl" }) ?? []
+
+                for file in files {
+                    let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey])
+                    let modDate = attrs?.contentModificationDate ?? Date.distantPast
+                    allJSONLFiles.append((file, modDate))
+                }
             }
-        }
-
-        // Also check ~/.claude/*.jsonl (legacy location)
-        let legacyDir = home.appendingPathComponent(".claude")
-        let legacyFiles = (try? FileManager.default.contentsOfDirectory(
-            at: legacyDir,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: .skipsHiddenFiles
-        ).filter { $0.pathExtension == "jsonl" }) ?? []
-        for file in legacyFiles {
-            let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey])
-            let modDate = attrs?.contentModificationDate ?? Date.distantPast
-            allJSONLFiles.append((file, modDate))
         }
 
         // Most recently modified file = active session
         allJSONLFiles.sort { $0.1 > $1.1 }
 
-        guard let mostRecentFile = allJSONLFiles.first else {
+        guard let (fileURL, _) = allJSONLFiles.first else {
             throw TokenServiceError.fileNotFound
         }
 
-        return try parseSessionJSONL(at: mostRecentFile.0, modDate: mostRecentFile.1)
+        return try parseSessionJSONL(at: fileURL)
     }
 
-    private func parseSessionJSONL(at url: URL, modDate: Date) throws -> TokenStatus {
-        let data = try Data(contentsOf: url)
-        let content = String(data: data, encoding: .utf8) ?? ""
+    private func parseSessionJSONL(at url: URL) throws -> TokenStatus {
+        let content = try String(contentsOf: url, encoding: .utf8)
         let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
 
-        // Each API call sends the full context, so the LAST assistant message's
-        // input_tokens reflects the current context window usage.
+        // Each Claude Code API call sends the entire accumulated context, so the LAST
+        // assistant message's token counts reflect current context window usage.
         var lastInputTokens: Int?
+        var lastCacheRead = 0
+        var lastCacheCreation = 0
         var lastOutputTokens = 0
         var detectedModel: String?
         var sessionStartTimestamp: String?
@@ -257,9 +248,8 @@ class TokenService {
                   let entry = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
             else { continue }
 
-            // Capture session start time from the first entry
-            if sessionStartTimestamp == nil, let ts = entry["timestamp"] as? String {
-                sessionStartTimestamp = ts
+            if sessionStartTimestamp == nil {
+                sessionStartTimestamp = entry["timestamp"] as? String
             }
 
             guard let type = entry["type"] as? String, type == "assistant",
@@ -267,48 +257,47 @@ class TokenService {
                   let usage = message["usage"] as? [String: Any]
             else { continue }
 
-            if let model = message["model"] as? String {
-                detectedModel = model
-            }
+            if let model = message["model"] as? String { detectedModel = model }
 
-            if let inputToks = usage["input_tokens"] as? Int {
-                lastInputTokens = inputToks
-            }
-            if let outputToks = usage["output_tokens"] as? Int {
-                lastOutputTokens = outputToks
-            }
+            // All three fields contribute to context window consumption.
+            lastInputTokens    = usage["input_tokens"] as? Int
+            lastCacheRead      = usage["cache_read_input_tokens"] as? Int ?? 0
+            lastCacheCreation  = usage["cache_creation_input_tokens"] as? Int ?? 0
+            lastOutputTokens   = usage["output_tokens"] as? Int ?? 0
         }
 
         guard let inputTokens = lastInputTokens else {
             throw TokenServiceError.noDataAvailable
         }
 
-        // Determine context window size based on model (all modern Claude = 200k)
-        let contextWindow: Int
-        if let model = detectedModel, model.contains("haiku") {
-            contextWindow = 200_000
-        } else {
-            contextWindow = 200_000
-        }
-
-        let usedTokens = inputTokens + lastOutputTokens
-        let remaining = max(0, contextWindow - inputTokens)
+        // True context window usage = uncached + cached-read + cache-creation tokens.
+        let contextUsed = inputTokens + lastCacheRead + lastCacheCreation
+        let contextWindow = 200_000  // all current Claude models (Haiku/Sonnet/Opus)
+        let remaining = max(0, contextWindow - contextUsed)
+        let usedTotal = contextUsed + lastOutputTokens
 
         var status = TokenStatus()
         status.remainingTokens = remaining
         status.totalTokens = contextWindow
-        status.usedTokens = usedTokens
+        status.usedTokens = usedTotal
         status.resetTime = sessionStartTimestamp
+
+        if let model = detectedModel {
+            // Embed model name in resetTime field as fallback display hint
+            // Only if no real timestamp was found
+            if status.resetTime == nil { status.resetTime = "Session: \(model)" }
+        }
 
         return status
     }
 
-    // MARK: - Option D: CLI
+    // MARK: - Option E: CLI
+
     private func fetchFromCLI() async throws -> TokenStatus {
         return try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = ["-c", "claude status --json 2>/dev/null || npx claude status --json 2>/dev/null"]
+            process.arguments = ["-c", "claude status --json 2>/dev/null"]
 
             let pipe = Pipe()
             process.standardOutput = pipe
@@ -317,20 +306,16 @@ class TokenService {
             do {
                 try process.launch()
                 process.waitUntilExit()
-
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                if data.isEmpty {
+                guard !data.isEmpty else {
                     continuation.resume(throwing: TokenServiceError.noDataAvailable)
                     return
                 }
-
                 do {
-                    let status = try JSONDecoder().decode(TokenStatus.self, from: data)
-                    continuation.resume(returning: status)
+                    continuation.resume(returning: try JSONDecoder().decode(TokenStatus.self, from: data))
                 } catch {
                     do {
-                        let status = try self.parseFlexibleJSON(data: data)
-                        continuation.resume(returning: status)
+                        continuation.resume(returning: try self.parseFlexibleJSON(data: data))
                     } catch {
                         continuation.resume(throwing: TokenServiceError.decodingFailed(error.localizedDescription))
                     }
@@ -342,6 +327,7 @@ class TokenService {
     }
 
     // MARK: - Flexible JSON parser
+
     private func parseFlexibleJSON(data: Data) throws -> TokenStatus {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw TokenServiceError.decodingFailed("Not a valid JSON object")
@@ -349,26 +335,25 @@ class TokenService {
 
         var status = TokenStatus()
 
-        // Try multiple key variations
         let remainingKeys = ["remaining_tokens", "remainingTokens", "remaining", "tokens_remaining", "tokensRemaining"]
-        let totalKeys = ["total_tokens", "totalTokens", "total", "limit", "token_limit", "tokenLimit"]
-        let resetKeys = ["reset_time", "resetTime", "reset_at", "resetAt", "next_reset"]
-        let percentKeys = ["percent_remaining", "percentRemaining", "percent", "percentage_remaining"]
+        let totalKeys     = ["total_tokens", "totalTokens", "total", "limit", "token_limit", "tokenLimit"]
+        let resetKeys     = ["reset_time", "resetTime", "reset_at", "resetAt", "next_reset"]
+        let percentKeys   = ["percent_remaining", "percentRemaining", "percent", "percentage_remaining"]
 
         for key in remainingKeys {
-            if let val = json[key] as? Int { status.remainingTokens = val; break }
+            if let val = json[key] as? Int    { status.remainingTokens = val;      break }
             if let val = json[key] as? Double { status.remainingTokens = Int(val); break }
         }
         for key in totalKeys {
-            if let val = json[key] as? Int { status.totalTokens = val; break }
+            if let val = json[key] as? Int    { status.totalTokens = val;      break }
             if let val = json[key] as? Double { status.totalTokens = Int(val); break }
         }
         for key in resetKeys {
             if let val = json[key] as? String { status.resetTime = val; break }
         }
         for key in percentKeys {
-            if let val = json[key] as? Double { status.percentRemaining = val; break }
-            if let val = json[key] as? Int { status.percentRemaining = Double(val); break }
+            if let val = json[key] as? Double { status.percentRemaining = val;        break }
+            if let val = json[key] as? Int    { status.percentRemaining = Double(val); break }
         }
 
         if status.remainingTokens == nil && status.percentRemaining == nil {
