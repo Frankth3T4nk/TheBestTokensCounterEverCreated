@@ -29,22 +29,27 @@ class TokenService {
     }
 
     func fetchTokenStatus() async throws -> TokenStatus {
-        // Option A: HTTP endpoint
+        // Option A: Anthropic API rate-limit headers (requires API key in Settings)
+        if let status = try? await fetchFromAnthropicAPI() {
+            return status
+        }
+
+        // Option B: Custom HTTP endpoint
         if let status = try? await fetchFromHTTP() {
             return status
         }
 
-        // Option B: Local file
+        // Option C: Local file
         if let status = try? await fetchFromFile() {
             return status
         }
 
-        // Option C: Claude Code session JSONL files (~/.claude/projects/)
+        // Option D: Claude Code session JSONL files (~/.claude/projects/)
         if let status = try? await fetchFromClaudeSessionFiles() {
             return status
         }
 
-        // Option D: CLI (claude status --json)
+        // Option E: CLI (claude status --json)
         if let status = try? await fetchFromCLI() {
             return status
         }
@@ -52,7 +57,57 @@ class TokenService {
         throw TokenServiceError.noDataAvailable
     }
 
-    // MARK: - Option A: HTTP endpoint
+    // MARK: - Option A: Anthropic API rate-limit headers
+    private func fetchFromAnthropicAPI() async throws -> TokenStatus {
+        let apiKey = SettingsManager.shared.anthropicApiKey
+        guard !apiKey.isEmpty else {
+            throw TokenServiceError.noDataAvailable
+        }
+
+        guard let url = URL(string: "https://api.anthropic.com/v1/models") else {
+            throw TokenServiceError.networkError("Invalid Anthropic API URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+
+        let (_, response) = try await session.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TokenServiceError.networkError("No HTTP response from Anthropic API")
+        }
+
+        // 401 means bad key — surface that clearly
+        if httpResponse.statusCode == 401 {
+            throw TokenServiceError.networkError("Invalid API key — check Settings")
+        }
+
+        // Extract token rate-limit headers (present on all Anthropic API responses)
+        let headers = httpResponse.allHeaderFields as? [String: String] ?? [:]
+
+        // Try both header casing variants (URLSession lowercases them on some OS versions)
+        func header(_ name: String) -> String? {
+            headers[name] ?? headers[name.lowercased()]
+        }
+
+        let remaining = header("anthropic-ratelimit-tokens-remaining").flatMap { Int($0) }
+        let limit     = header("anthropic-ratelimit-tokens-limit").flatMap { Int($0) }
+        let resetTime = header("anthropic-ratelimit-tokens-reset")
+
+        guard let remaining, let limit else {
+            throw TokenServiceError.noDataAvailable
+        }
+
+        var status = TokenStatus()
+        status.remainingTokens = remaining
+        status.totalTokens = limit
+        status.resetTime = resetTime
+        return status
+    }
+
+    // MARK: - Option B: HTTP endpoint
     private func fetchFromHTTP() async throws -> TokenStatus {
         let customEndpoint = SettingsManager.shared.customEndpoint
         let ports = customEndpoint.isEmpty ? [27681, 3000, 8080, 9000] : []
@@ -94,7 +149,7 @@ class TokenService {
         }
     }
 
-    // MARK: - Option B: Local file
+    // MARK: - Option C: Local file
     private func fetchFromFile() async throws -> TokenStatus {
         let customPath = SettingsManager.shared.customFilePath
 
