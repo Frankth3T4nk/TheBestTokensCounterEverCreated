@@ -35,7 +35,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         appState?.stopMonitoring()
     }
 
-    private func setupMenuBar() {
+    @MainActor private func setupMenuBar() {
         statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         guard let button = statusBarItem?.button else { return }

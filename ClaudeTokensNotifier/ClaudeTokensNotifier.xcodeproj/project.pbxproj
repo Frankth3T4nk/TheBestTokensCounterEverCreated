@@ -21,7 +21,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		B100 /* ClaudeTokensNotifier.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Claude Tokens Notifier.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		B100 /* Claude Tokens Notifier.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Claude Tokens Notifier.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		B101 /* ClaudeTokensNotifierApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeTokensNotifierApp.swift; sourceTree = "<group>"; };
 		B102 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		B103 /* TokenService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenService.swift; sourceTree = "<group>"; };
@@ -47,7 +47,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		D100 /* root */ = {
+		D100 = {
 			isa = PBXGroup;
 			children = (
 				D101 /* ClaudeTokensNotifier */,
@@ -72,7 +72,7 @@
 		D102 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				B100 /* ClaudeTokensNotifier.app */,
+				B100 /* Claude Tokens Notifier.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -123,7 +123,7 @@
 			);
 			name = ClaudeTokensNotifier;
 			productName = ClaudeTokensNotifier;
-			productReference = B100 /* ClaudeTokensNotifier.app */;
+			productReference = B100 /* Claude Tokens Notifier.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -317,7 +317,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 546DATHG8X;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ClaudeTokensNotifier/Info.plist;
@@ -344,7 +344,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 546DATHG8X;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ClaudeTokensNotifier/Info.plist;

@@ -10,7 +10,5 @@
 	<true/>
 	<key>com.apple.security.files.downloads.read-write</key>
 	<true/>
-	<key>com.apple.developer.launch-at-login-helper</key>
-	<true/>
 </dict>
 </plist>
