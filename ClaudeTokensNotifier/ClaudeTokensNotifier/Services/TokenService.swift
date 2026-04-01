@@ -39,7 +39,12 @@ class TokenService {
             return status
         }
 
-        // Option C: CLI
+        // Option C: Claude Code session JSONL files (~/.claude/projects/)
+        if let status = try? await fetchFromClaudeSessionFiles() {
+            return status
+        }
+
+        // Option D: CLI (claude status --json)
         if let status = try? await fetchFromCLI() {
             return status
         }
@@ -119,7 +124,124 @@ class TokenService {
         throw TokenServiceError.fileNotFound
     }
 
-    // MARK: - Option C: CLI
+    // MARK: - Option C: Claude Code session JSONL files
+    private func fetchFromClaudeSessionFiles() async throws -> TokenStatus {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let projectsDir = home.appendingPathComponent(".claude/projects")
+
+        guard FileManager.default.fileExists(atPath: projectsDir.path) else {
+            throw TokenServiceError.fileNotFound
+        }
+
+        // Collect all JSONL files across project subdirectories
+        let projectDirs = (try? FileManager.default.contentsOfDirectory(
+            at: projectsDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: .skipsHiddenFiles
+        )) ?? []
+
+        var allJSONLFiles: [(URL, Date)] = []
+        for dir in projectDirs {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: .skipsHiddenFiles
+            ).filter { $0.pathExtension == "jsonl" }) ?? []
+
+            for file in files {
+                let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey])
+                let modDate = attrs?.contentModificationDate ?? Date.distantPast
+                allJSONLFiles.append((file, modDate))
+            }
+        }
+
+        // Also check ~/.claude/*.jsonl (legacy location)
+        let legacyDir = home.appendingPathComponent(".claude")
+        let legacyFiles = (try? FileManager.default.contentsOfDirectory(
+            at: legacyDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: .skipsHiddenFiles
+        ).filter { $0.pathExtension == "jsonl" }) ?? []
+        for file in legacyFiles {
+            let attrs = try? file.resourceValues(forKeys: [.contentModificationDateKey])
+            let modDate = attrs?.contentModificationDate ?? Date.distantPast
+            allJSONLFiles.append((file, modDate))
+        }
+
+        // Most recently modified file = active session
+        allJSONLFiles.sort { $0.1 > $1.1 }
+
+        guard let mostRecentFile = allJSONLFiles.first else {
+            throw TokenServiceError.fileNotFound
+        }
+
+        return try parseSessionJSONL(at: mostRecentFile.0, modDate: mostRecentFile.1)
+    }
+
+    private func parseSessionJSONL(at url: URL, modDate: Date) throws -> TokenStatus {
+        let data = try Data(contentsOf: url)
+        let content = String(data: data, encoding: .utf8) ?? ""
+        let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
+
+        // Each API call sends the full context, so the LAST assistant message's
+        // input_tokens reflects the current context window usage.
+        var lastInputTokens: Int?
+        var lastOutputTokens = 0
+        var detectedModel: String?
+        var sessionStartTimestamp: String?
+
+        for line in lines {
+            guard let lineData = line.data(using: .utf8),
+                  let entry = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
+            else { continue }
+
+            // Capture session start time from the first entry
+            if sessionStartTimestamp == nil, let ts = entry["timestamp"] as? String {
+                sessionStartTimestamp = ts
+            }
+
+            guard let type = entry["type"] as? String, type == "assistant",
+                  let message = entry["message"] as? [String: Any],
+                  let usage = message["usage"] as? [String: Any]
+            else { continue }
+
+            if let model = message["model"] as? String {
+                detectedModel = model
+            }
+
+            if let inputToks = usage["input_tokens"] as? Int {
+                lastInputTokens = inputToks
+            }
+            if let outputToks = usage["output_tokens"] as? Int {
+                lastOutputTokens = outputToks
+            }
+        }
+
+        guard let inputTokens = lastInputTokens else {
+            throw TokenServiceError.noDataAvailable
+        }
+
+        // Determine context window size based on model (all modern Claude = 200k)
+        let contextWindow: Int
+        if let model = detectedModel, model.contains("haiku") {
+            contextWindow = 200_000
+        } else {
+            contextWindow = 200_000
+        }
+
+        let usedTokens = inputTokens + lastOutputTokens
+        let remaining = max(0, contextWindow - inputTokens)
+
+        var status = TokenStatus()
+        status.remainingTokens = remaining
+        status.totalTokens = contextWindow
+        status.usedTokens = usedTokens
+        status.resetTime = sessionStartTimestamp
+
+        return status
+    }
+
+    // MARK: - Option D: CLI
     private func fetchFromCLI() async throws -> TokenStatus {
         return try await withCheckedThrowingContinuation { continuation in
             let process = Process()
